@@ -1,0 +1,134 @@
+#include <Encoder.h>
+#define WHEEL_DIAMETER 3.25*PI //inches
+#define WHEEL_WIDTH 7 //inches
+#define ONE_TURN 1600
+#define INCH 165
+#define RIGHT_MOTOR 0 //values chosen to allow for convienent encoder assignment
+#define LEFT_MOTOR 1
+int rightSpeed;
+int inch;
+
+Encoder encLeft(20,21);
+Encoder encRight(18,19);
+
+void setup() {
+  // put your setup code here, to run once:
+  Serial.begin(9600);
+  pinMode(3, OUTPUT);
+  pinMode(4, OUTPUT);
+  pinMode(11, OUTPUT);
+  pinMode(10, OUTPUT);
+  
+
+
+  delay(5000);
+  Serial.println(encLeft.read());
+  Serial.println(INCH);
+  encLeft.write(0);
+}
+
+
+#define LEFT_DIR  3
+#define LEFT_SPD  11
+#define RIGHT_DIR  4
+#define RIGHT_SPD  10
+
+#define STRAIGHT_DELAY  4000
+#define STRAIGHT_SPEED  255
+#define TURN_DELAY  350
+#define TURN_SPEED  250
+void loop() {
+  // put your main code here, to run repeatedly:
+  turn(10, 360, 250);
+  turn(20, 360, 250);
+  
+  //turn(15, -360, 255);
+  //turn(25, -360, 255);
+  delay(3000);
+  driveStraight(12, 200);
+  delay(1500);
+}
+
+void leftMotorOn(int speed, bool dir){
+  digitalWrite(LEFT_DIR, dir); //1  forward 0  backward
+  analogWrite(LEFT_SPD, speed);
+}
+
+void rightMotorOn(int speed, bool dir){
+  digitalWrite(RIGHT_DIR, dir); //1  forward 0  backward
+  analogWrite(RIGHT_SPD, speed);
+}
+
+void driveStraight(float distance, int speed){
+  bool dir=true;
+  if(distance<0) {
+    dir = !dir;
+    distance = -distance;
+  }
+  encLeft.write(0);
+  int rightSpeed = speed;
+  leftMotorOn(speed, dir);
+  rightMotorOn(speed, dir);
+  int traveled = 0;
+  while(abs(traveled)<distance*INCH){
+    traveled = encLeft.read();
+    rightSpeed = speed+(abs(encLeft.read())-abs(encRight.read()));//compares
+    //Serial.println(rightSpeed);
+    rightMotorOn(rightSpeed, dir);
+  }
+  leftMotorOn(250, !dir);
+  rightMotorOn(250, !dir);
+  delay(20);
+  leftMotorOn(0, !dir);
+  rightMotorOn(0, !dir);
+}
+
+void motorOn(int motor, int speed, bool dir){
+  if (motor == LEFT_MOTOR) leftMotorOn(speed, dir);
+  else rightMotorOn(speed, dir);
+}
+
+void turn(double radius, double deg, int speed){
+
+  int wheelIn;//0
+  int wheelOut;
+  if (deg > 0){
+    wheelIn = LEFT_MOTOR;
+    wheelOut= RIGHT_MOTOR;
+  }else{
+    wheelIn = RIGHT_MOTOR;
+    wheelOut = LEFT_MOTOR;
+  }
+
+  double ratIO = (2*radius-WHEEL_WIDTH)/(2*radius+WHEEL_WIDTH);
+  int outerArcL = (PI*(2*radius+WHEEL_WIDTH)*deg*INCH)/360;
+  int innerSpeed = speed*ratIO;
+  Serial.println(ratIO);
+  Serial.print("outer speed:");
+  Serial.println(speed);
+  Serial.print("inner speed:");
+  Serial.println(speed*ratIO);
+
+
+  motorOn(wheelOut, speed, 1);
+  motorOn(wheelIn, speed*ratIO, 1);
+  
+Serial.println("before loop");
+  int encoderValues[] = {0, 0};
+  encRight.write(0);
+  encLeft.write(0);
+  while(encoderValues[wheelOut]<outerArcL){
+    encoderValues[0] = encRight.read(); 
+    encoderValues[1] = encLeft.read();
+    Serial.println(innerSpeed+(encoderValues[wheelOut]*ratIO-encoderValues[wheelIn]));
+
+    motorOn(wheelIn, innerSpeed + (encoderValues[wheelOut]*ratIO-encoderValues[wheelIn]), 1);
+  }
+
+  motorOn(wheelOut, speed, 0);
+  motorOn(wheelIn, speed*ratIO, 0);
+  delay(20);
+  motorOn(wheelOut, 0, 1);
+  motorOn(wheelIn, 0, 1);
+
+}
