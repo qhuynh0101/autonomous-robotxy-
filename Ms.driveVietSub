@@ -1,0 +1,270 @@
+#include <Encoder.h>
+
+// --- Định nghĩa Hằng số ---
+// #define WHEEL_DIAMETER 3.25*PI //inches (Không dùng trong code này)
+#define WHEEL_WIDTH 7       // inches - Khoảng cách giữa hai bánh xe, quan trọng cho hàm turn()
+// #define ONE_TURN 1600         // (Không dùng trong code này)
+#define INCH 165            // Số xung encoder trên mỗi inch di chuyển (cần đo thực tế)
+
+#define RIGHT_MOTOR 0       // ID cho động cơ phải
+#define LEFT_MOTOR 1        // ID cho động cơ trái
+
+// Chân điều khiển động cơ
+#define LEFT_DIR_PIN  3     // Chân chiều động cơ trái
+#define LEFT_SPD_PIN  11    // Chân PWM tốc độ động cơ trái
+#define RIGHT_DIR_PIN 4     // Chân chiều động cơ phải
+#define RIGHT_SPD_PIN 10    // Chân PWM tốc độ động cơ phải
+
+// Hệ số Kp cho bộ điều khiển PID (ở đây chỉ dùng P)
+// Bạn cần tinh chỉnh các giá trị này!
+#define Kp_straight_f 0.2f  // Hệ số P cho việc đi thẳng (float)
+#define Kp_turn_f     0.1f  // Hệ số P cho việc rẽ (float)
+
+// --- Khai báo Encoder ---
+// Đảm bảo các chân này là chân có khả năng ngắt (interrupt pins) trên board của bạn
+Encoder encLeft(20, 21);
+Encoder encRight(18, 19);
+
+// --- Biến Toàn cục ---
+// int rightSpeed; // Biến này không được sử dụng hiệu quả, đã được loại bỏ.
+// int inch;       // Biến này không được sử dụng, đã có macro INCH.
+
+
+void setup() {
+  Serial.begin(9600);
+
+  pinMode(LEFT_DIR_PIN, OUTPUT);
+  pinMode(LEFT_SPD_PIN, OUTPUT);
+  pinMode(RIGHT_DIR_PIN, OUTPUT);
+  pinMode(RIGHT_SPD_PIN, OUTPUT);
+
+  Serial.println("Robot Khoi Dong!");
+  Serial.print("Gia tri INCH (ticks/inch): ");
+  Serial.println(INCH);
+
+  delay(2000); // Chờ một chút để có thể mở Serial Monitor
+  encLeft.write(0);
+  encRight.write(0); // Reset cả hai encoder
+  Serial.println("Encoder da duoc reset.");
+}
+
+void loop() {
+  Serial.println("Bat dau chu trinh loop...");
+
+  Serial.println("Re trai goc lon (radius 10, 360 deg, speed 200)...");
+  turn(10, 360, 200); // Rẽ với bán kính 10 inches, 360 độ, tốc độ 200
+  delay(1000);
+
+  Serial.println("Re phai goc lon (radius 20, -360 deg, speed 200)...");
+  turn(20, -360, 200); // Rẽ ngược lại với bán kính 20 inches, 360 độ, tốc độ 200
+  delay(1000);
+
+  Serial.println("Di thang 12 inches, speed 180...");
+  driveStraight(12, 180); // Đi thẳng 12 inches, tốc độ 180
+  delay(1500);
+
+  Serial.println("Di lui 6 inches, speed 150...");
+  driveStraight(-6, 150); // Đi lùi 6 inches, tốc độ 150
+  delay(1500);
+
+  Serial.println("Ket thuc chu trinh loop. Lap lai sau 3 giay.");
+  delay(3000);
+}
+
+// --- Các Hàm Điều Khiển Động Cơ Cơ Bản ---
+void leftMotorOn(int speed, bool dir) {
+  // Chuẩn hóa tốc độ trong khoảng 0-255
+  speed = constrain(speed, 0, 255);
+  digitalWrite(LEFT_DIR_PIN, dir); // 1: tiến, 0: lùi (tùy theo cách nối dây motor driver)
+  analogWrite(LEFT_SPD_PIN, speed);
+}
+
+void rightMotorOn(int speed, bool dir) {
+  // Chuẩn hóa tốc độ trong khoảng 0-255
+  speed = constrain(speed, 0, 255);
+  digitalWrite(RIGHT_DIR_PIN, dir); // 1: tiến, 0: lùi
+  analogWrite(RIGHT_SPD_PIN, speed);
+}
+
+void motorOn(int motor, int speed, bool dir) {
+  if (motor == LEFT_MOTOR) {
+    leftMotorOn(speed, dir);
+  } else {
+    rightMotorOn(speed, dir);
+  }
+}
+
+void stopMotors() {
+  leftMotorOn(0, true); // Tốc độ 0, chiều không quá quan trọng
+  rightMotorOn(0, true);
+}
+
+void brakeMotors(bool currentDir) {
+  // Hãm động cơ bằng cách đảo chiều trong thời gian ngắn rồi dừng hẳn
+  leftMotorOn(200, !currentDir); // Đảo chiều với tốc độ vừa phải
+  rightMotorOn(200, !currentDir);
+  delay(25); // Thời gian hãm, cần tinh chỉnh
+  stopMotors();
+}
+
+// --- Các Hàm Di Chuyển Nâng Cao ---
+
+void driveStraight(float distance_inches, int speed) {
+  bool dir = true; // Mặc định là đi tiến
+  if (distance_inches < 0) {
+    dir = false; // Đi lùi
+    distance_inches = -distance_inches; // Sử dụng giá trị dương cho quãng đường
+  }
+
+  long targetTicks = distance_inches * INCH;
+  long currentLeftTicks = 0;
+  long currentRightTicks = 0;
+  long traveledTicksLeft = 0; // Dùng encoder trái làm tham chiếu chính cho quãng đường
+
+  encLeft.write(0);
+  encRight.write(0);
+
+  Serial.print("driveStraight: ");
+  Serial.print(dir ? "Tien " : "Lui ");
+  Serial.print(distance_inches);
+  Serial.print(" inches voi toc do ");
+  Serial.println(speed);
+
+  leftMotorOn(speed, dir);
+  rightMotorOn(speed, dir);
+
+  while (abs(traveledTicksLeft) < targetTicks) {
+    currentLeftTicks = encLeft.read();
+    currentRightTicks = encRight.read();
+
+    traveledTicksLeft = currentLeftTicks; // Cập nhật quãng đường đã đi (theo encoder trái)
+
+    // Tính toán sai số giữa hai encoder
+    // Nếu đi tiến, cả hai ticks đều dương. Nếu đi lùi, cả hai ticks đều âm.
+    long error = currentLeftTicks - currentRightTicks;
+
+    // Tính toán sự điều chỉnh tốc độ dựa trên sai số và Kp
+    int correction = (int)(Kp_straight_f * (float)error);
+
+    int speedLeftAdjusted = speed - correction;
+    int speedRightAdjusted = speed + correction;
+
+    // Giữ tốc độ trong khoảng cho phép và áp dụng cho động cơ
+    leftMotorOn(speedLeftAdjusted, dir);
+    rightMotorOn(speedRightAdjusted, dir);
+
+    // In giá trị debug (có thể comment lại để tăng tốc độ)
+    // Serial.print("L: "); Serial.print(currentLeftTicks);
+    // Serial.print(" R: "); Serial.print(currentRightTicks);
+    // Serial.print(" Err: "); Serial.print(error);
+    // Serial.print(" Corr: "); Serial.print(correction);
+    // Serial.print(" SpdL: "); Serial.print(speedLeftAdjusted);
+    // Serial.print(" SpdR: "); Serial.println(speedRightAdjusted);
+    // delay(10); // Giảm delay để phản ứng nhanh hơn, hoặc bỏ đi
+  }
+
+  brakeMotors(dir); // Hãm động cơ sau khi hoàn thành
+  Serial.println("driveStraight: Hoan thanh.");
+}
+
+
+void turn(double radius_inches, double deg, int speed) {
+  int wheelToTrack; // Bánh xe nào sẽ được theo dõi quãng đường (bánh ngoài)
+  bool turnLeft;   // true nếu rẽ trái, false nếu rẽ phải
+
+  if (deg > 0) { // Rẽ trái (theo quy ước góc dương là ngược chiều kim đồng hồ)
+    wheelToTrack = RIGHT_MOTOR; // Bánh phải là bánh ngoài
+    turnLeft = true;
+    Serial.print("turn: Re Trai ");
+  } else { // Rẽ phải
+    wheelToTrack = LEFT_MOTOR;  // Bánh trái là bánh ngoài
+    turnLeft = false;
+    deg = -deg; // Sử dụng giá trị dương cho góc để tính toán quãng đường
+    Serial.print("turn: Re Phai ");
+  }
+
+  Serial.print(deg);
+  Serial.print(" do, ban kinh ");
+  Serial.print(radius_inches);
+  Serial.println(" inches.");
+
+  // Tính toán tỉ lệ tốc độ giữa bánh trong và bánh ngoài
+  // ratIO = R_in / R_out = (radius - WHEEL_WIDTH/2) / (radius + WHEEL_WIDTH/2)
+  double ratioSpeedInnerOuter = (2.0 * radius_inches - WHEEL_WIDTH) / (2.0 * radius_inches + WHEEL_WIDTH);
+  if (radius_inches <= WHEEL_WIDTH / 2.0) {
+      Serial.println("Error: Ban kinh re qua nho so voi chieu rong robot!");
+      // Xử lý quay tại chỗ nếu bán kính quá nhỏ hoặc bằng 0 (pivot turn)
+      // (Logic này chưa được thêm vào, hiện tại sẽ tính toán với ratioSpeedInnerOuter có thể âm/không hợp lệ)
+      // Nếu ratioSpeedInnerOuter âm, nghĩa là bánh trong phải quay ngược chiều.
+  }
+
+
+  // Quãng đường cung ngoài mà bánh xe ngoài cần đi (tính bằng ticks)
+  // ArcLength = (deg/360) * 2 * PI * R_outer
+  // R_outer = radius_inches + WHEEL_WIDTH/2.0
+  double outerArcLengthInches = (deg / 360.0) * PI * (2.0 * radius_inches + WHEEL_WIDTH);
+  long targetOuterTicks = outerArcLengthInches * INCH;
+
+  int outerSpeed = speed;
+  int innerSpeedBase = (int)(speed * ratioSpeedInnerOuter); // Tốc độ cơ bản của bánh trong
+
+  Serial.print("  Ti le toc do (Trong/Ngoai): "); Serial.println(ratioSpeedInnerOuter);
+  Serial.print("  Quang duong banh ngoai (inches): "); Serial.println(outerArcLengthInches);
+  Serial.print("  Target ticks banh ngoai: "); Serial.println(targetOuterTicks);
+  Serial.print("  Toc do banh ngoai: "); Serial.println(outerSpeed);
+  Serial.print("  Toc do co ban banh trong: "); Serial.println(innerSpeedBase);
+
+
+  encLeft.write(0);
+  encRight.write(0);
+
+  long currentLeftTicks = 0;
+  long currentRightTicks = 0;
+  long encoderOuterTrackedValue = 0;
+
+  // Xác định chiều quay cho từng động cơ dựa trên hướng rẽ
+  // Giả sử rẽ bằng cách cả hai bánh đều tiến, bánh ngoài nhanh hơn bánh trong
+  // Hoặc một bánh tiến, một bánh lùi cho pivot turn (cần logic phức tạp hơn cho radius nhỏ)
+  bool dirOuter = true; // Bánh ngoài luôn tiến (cho rẽ thông thường)
+  bool dirInner = true; // Bánh trong cũng tiến
+  
+  // Nếu ratioSpeedInnerOuter < 0 (bán kính rẽ rất nhỏ, bánh trong cần quay lùi)
+  if (ratioSpeedInnerOuter < 0) {
+    dirInner = false; // Bánh trong quay lùi
+    innerSpeedBase = abs(innerSpeedBase); // Dùng tốc độ dương
+  }
+
+
+  if (turnLeft) {
+    rightMotorOn(outerSpeed, dirOuter); // Bánh phải (ngoài)
+    leftMotorOn(innerSpeedBase, dirInner);  // Bánh trái (trong)
+  } else {
+    leftMotorOn(outerSpeed, dirOuter);  // Bánh trái (ngoài)
+    rightMotorOn(innerSpeedBase, dirInner); // Bánh phải (trong)
+  }
+
+  while (abs(encoderOuterTrackedValue) < targetOuterTicks) {
+    currentLeftTicks = encLeft.read();
+    currentRightTicks = encRight.read();
+
+    if (wheelToTrack == LEFT_MOTOR) {
+      encoderOuterTrackedValue = currentLeftTicks;
+    } else {
+      encoderOuterTrackedValue = currentRightTicks;
+    }
+
+    // Điều chỉnh tốc độ bánh trong để giữ đúng tỉ lệ với bánh ngoài
+    // Mục tiêu: currentInnerTicks / currentOuterTicks_approx = ratioSpeedInnerOuter
+    // Hay: currentInnerTicks_approx = currentOuterTicks * ratioSpeedInnerOuter
+    float targetInnerTicksScaled;
+    long currentInnerTicksActual;
+
+    if (turnLeft) { // Rẽ trái, bánh trong là LEFT_MOTOR
+        targetInnerTicksScaled = (float)currentRightTicks * ratioSpeedInnerOuter;
+        currentInnerTicksActual = currentLeftTicks;
+    } else { // Rẽ phải, bánh trong là RIGHT_MOTOR
+        targetInnerTicksScaled = (float)currentLeftTicks * ratioSpeedInnerOuter;
+        currentInnerTicksActual = currentRightTicks;
+    }
+    
+    float errorInnerTicks = targetInnerTicksScaled -
